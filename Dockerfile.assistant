@@ -1,10 +1,30 @@
+# The web UI is compiled into the Go binary (frontend/handler.go, //go:embed dist).
+# This repo only ships a placeholder frontend/dist/index.html. Upstream's
+# release workflow builds https://github.com/donetick/frontend and copies
+# that dist in before `go build`. Without that step the app serves
+# "This file will be replaced by the frontend build process".
+#
+# FRONTEND_REF is the donetick/frontend commit that shipped with tag v0.1.79
+# (release 1.2.49, 2026-08-18).
+
+FROM node:23-bookworm AS frontend
+WORKDIR /src
+ARG FRONTEND_REF=b3b3a0e5a8f4cb1b150f1d5472cda30d526bb976
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends git ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+RUN git clone --branch develop https://github.com/donetick/frontend.git . \
+    && git checkout ${FRONTEND_REF}
+RUN npm run build-selfhosted
+
 FROM --platform=$BUILDPLATFORM golang:1.24-alpine AS builder
 WORKDIR /usr/src/app
 COPY go.mod go.sum ./
 RUN go mod download
 COPY . .
-ARG TARGETOS
-ARG TARGETARCH
+COPY --from=frontend /src/dist ./frontend/dist
+ARG TARGETOS=linux
+ARG TARGETARCH=amd64
 RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build -buildvcs=false -o /donetick .
 
 FROM donetick/donetick:v0.1.79

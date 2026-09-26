@@ -27,10 +27,12 @@ Sync later with upstream:
 git fetch upstream && git merge upstream/develop
 ```
 
+The web UI is embedded in the Go binary. `Dockerfile.assistant` builds [donetick/frontend](https://github.com/donetick/frontend) at the commit that shipped with v0.1.79 and compiles that into the binary. The placeholder `frontend/dist/index.html` in this repo is not the running UI.
+
 Build the assistant image (on the server):
 
 ```bash
-docker build -f Dockerfile.assistant -t donetick:assistant .
+docker build --no-cache -f Dockerfile.assistant -t donetick:assistant .
 ```
 
 ---
