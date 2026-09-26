@@ -31,6 +31,7 @@ type User struct {
 	CreatedAt       time.Time `json:"created_at" gorm:"column:created_at"`                            // Created at
 	UpdatedAt       time.Time `json:"updated_at" gorm:"column:updated_at"`                            // Updated at
 	Disabled        bool      `json:"disabled" gorm:"column:disabled"`                                // Disabled
+	IsServiceUser   bool      `json:"isServiceUser" gorm:"column:is_service_user;default:false"`      // API-only assistant, skipped by assignee rotation
 	// Email    string `json:"email" gorm:"column:email"`       // Email
 	CustomerID              *string                `gorm:"column:customer_id;<-:false"`                      // read only column
 	Subscription            *string                `json:"subscription" gorm:"column:subscription;<-:false"` // read only column

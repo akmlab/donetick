@@ -15,6 +15,7 @@ type Circle struct {
 	InviteCode         string     `json:"invite_code" gorm:"column:invite_code"` // Invite code
 	Disabled           bool       `json:"disabled" gorm:"column:disabled"`       // Disabled
 	WebhookURL         *string    `json:"webhook_url" gorm:"column:webhook_url"` // Webhook URL
+	PointRules         string     `json:"pointRules,omitempty" gorm:"column:point_rules;type:text"`
 	SubscriptionStatus *string    `gorm:"column:status;<-:false"`                // read one column
 	ExpiredAt          *time.Time `gorm:"column:expired_at;<-:false"`            // read one column
 }
@@ -51,6 +52,7 @@ type UserCircleDetail struct {
 	NotificationType nModel.NotificationPlatform `json:"-" gorm:"column:notification_type"`
 	TargetID         string                      `json:"-" gorm:"column:target_id"` // Target ID
 	Image            string                      `json:"image" gorm:"column:image"` // Image
+	IsServiceUser    bool                        `json:"isServiceUser" gorm:"column:is_service_user"`
 }
 
 type Role string

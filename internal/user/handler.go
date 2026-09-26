@@ -4,6 +4,7 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"html"
 	"net/http"
@@ -31,6 +32,7 @@ import (
 	"google.golang.org/api/googleapi"
 	"google.golang.org/api/oauth2/v1"
 	"google.golang.org/api/option"
+	"gorm.io/gorm"
 )
 
 type Handler struct {
@@ -1745,6 +1747,120 @@ func passwordAuthDisabled() gin.HandlerFunc {
 	}
 }
 
+func (h *Handler) authenticateUser() gin.HandlerFunc {
+	tokenAuth := auth.APITokenMiddleware(h.userRepo)
+	jwtAuth := h.jwtAuth.MiddlewareFunc()
+	return func(c *gin.Context) {
+		if c.GetHeader("secretkey") != "" {
+			tokenAuth(c)
+			return
+		}
+		jwtAuth(c)
+	}
+}
+
+func (h *Handler) createServiceUser(c *gin.Context) {
+	currentUser, ok := auth.CurrentUser(c)
+	if !ok {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "Authentication failed"})
+		return
+	}
+
+	admins, err := h.circleRepo.GetCircleAdmins(c, currentUser.CircleID)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to verify admin status"})
+		return
+	}
+	isAdmin := false
+	for _, admin := range admins {
+		if admin.UserID == currentUser.ID {
+			isAdmin = true
+			break
+		}
+	}
+	if !isAdmin {
+		c.JSON(http.StatusForbidden, gin.H{"error": "You are not an admin of this circle"})
+		return
+	}
+
+	var req struct {
+		Username string `json:"username"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil || strings.TrimSpace(req.Username) == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "username is required"})
+		return
+	}
+	if !utils.IsValidUsername(req.Username) {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid username"})
+		return
+	}
+
+	existing, err := h.userRepo.GetUserByUsername(c, req.Username)
+	var serviceUser *uModel.User
+	switch {
+	case err == nil:
+		if !existing.IsServiceUser {
+			c.JSON(http.StatusConflict, gin.H{"error": "username belongs to a regular user"})
+			return
+		}
+		serviceUser = &existing.User
+	case errors.Is(err, gorm.ErrRecordNotFound):
+		passwordBytes := make([]byte, 32)
+		if _, err := rand.Read(passwordBytes); err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to generate password"})
+			return
+		}
+		encodedPassword, err := auth.EncodePassword(hex.EncodeToString(passwordBytes))
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to encode password"})
+			return
+		}
+		now := time.Now().UTC()
+		created, err := h.userRepo.CreateUser(c, &uModel.User{
+			Username:      req.Username,
+			DisplayName:   req.Username,
+			Email:         "",
+			Password:      encodedPassword,
+			CircleID:      currentUser.CircleID,
+			Provider:      uModel.AuthProviderDonetick,
+			IsServiceUser: true,
+			CreatedAt:     now,
+			UpdatedAt:     now,
+		})
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create service user"})
+			return
+		}
+		serviceUser = created
+	default:
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to look up username"})
+		return
+	}
+
+	if err := h.circleRepo.EnsureActiveMember(c, currentUser.CircleID, serviceUser.ID); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to add service user to circle"})
+		return
+	}
+
+	randomBytes := make([]byte, 16)
+	if _, err := rand.Read(randomBytes); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to generate token"})
+		return
+	}
+	timestamp := time.Now().UTC().Unix()
+	hashInput := fmt.Sprintf("%s:%d:%x", serviceUser.Username, timestamp, randomBytes)
+	hash := sha256.Sum256([]byte(hashInput))
+	token := hex.EncodeToString(hash[:])
+
+	tokenModel, err := h.userRepo.StoreAPIToken(c, serviceUser.ID, "assistant", token)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to store the token"})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"res": tokenModel})
+}
+
 func Routes(router *gin.Engine, h *Handler, jwtAuth *jwt.GinJWTMiddleware, limiter *limiter.Limiter, cfg *config.Config) {
 
 	userRoutes := router.Group("api/v1/users")
@@ -1779,6 +1895,12 @@ func Routes(router *gin.Engine, h *Handler, jwtAuth *jwt.GinJWTMiddleware, limit
 		userRoutes.GET("/subaccounts", h.getChildUsers)
 		userRoutes.PUT("/subaccounts/password", h.updateChildPassword)
 		userRoutes.DELETE("/subaccounts/:id", h.deleteChildUser)
+	}
+
+	serviceUserRoutes := router.Group("api/v1/users")
+	serviceUserRoutes.Use(h.authenticateUser(), utils.RateLimitMiddleware(limiter))
+	{
+		serviceUserRoutes.POST("/service", h.createServiceUser)
 	}
 
 	// Create new auth handler for enhanced token management

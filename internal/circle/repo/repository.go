@@ -2,6 +2,7 @@ package repo
 
 import (
 	"context"
+	"errors"
 	"time"
 
 	cModel "donetick.com/core/internal/circle/model"
@@ -53,7 +54,7 @@ func (r *CircleRepository) GetCircleUsers(c context.Context, circleID int) ([]*c
 	var circleUsers []*cModel.UserCircleDetail
 	if err := r.db.WithContext(c).
 		Table("user_circles uc").
-		Select("uc.*, u.username, u.display_name, u.chat_id, u.image, unt.user_id as user_id, unt.target_id as target_id, unt.type as notification_type").
+		Select("uc.*, u.username, u.display_name, u.chat_id, u.image, u.is_service_user, unt.user_id as user_id, unt.target_id as target_id, unt.type as notification_type").
 		Joins("left join users u on u.id = uc.user_id").
 		Joins("left join user_notification_targets unt on unt.user_id = u.id").
 		Where("uc.circle_id = ?", circleID).
@@ -146,6 +147,83 @@ func (r *CircleRepository) GetDefaultCircle(c context.Context, userID int) (*cMo
 		return nil, err
 	}
 	return &circle, nil
+}
+
+func (r *CircleRepository) EnsureActiveMember(c context.Context, circleID, userID int) error {
+	var existing cModel.UserCircle
+	err := r.db.WithContext(c).Where("circle_id = ? AND user_id = ?", circleID, userID).First(&existing).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return r.AddUserToCircle(c, &cModel.UserCircle{
+			UserID:    userID,
+			CircleID:  circleID,
+			Role:      cModel.UserRoleMember,
+			IsActive:  true,
+			CreatedAt: time.Now().UTC(),
+			UpdatedAt: time.Now().UTC(),
+		})
+	}
+	if err != nil {
+		return err
+	}
+	if existing.IsActive {
+		return nil
+	}
+	return r.db.WithContext(c).Model(&cModel.UserCircle{}).
+		Where("circle_id = ? AND user_id = ?", circleID, userID).
+		Updates(map[string]interface{}{
+			"is_active":  true,
+			"updated_at": time.Now().UTC(),
+		}).Error
+}
+
+func (r *CircleRepository) UpdatePointRules(c context.Context, circleID int, raw string) error {
+	return r.db.WithContext(c).Model(&cModel.Circle{}).Where("id = ?", circleID).Update("point_rules", raw).Error
+}
+
+type LeaderboardMember struct {
+	UserID        int
+	Username      string
+	DisplayName   string
+	IsServiceUser bool
+}
+
+func (r *CircleRepository) LeaderboardMembers(c context.Context, circleID int) ([]LeaderboardMember, error) {
+	var members []LeaderboardMember
+	err := r.db.WithContext(c).Raw(`
+		SELECT u.id as user_id, u.username, u.display_name, u.is_service_user
+		FROM user_circles uc
+		JOIN users u ON u.id = uc.user_id
+		WHERE uc.circle_id = ? AND uc.is_active = true
+	`, circleID).Scan(&members).Error
+	return members, err
+}
+
+type LeaderboardEvent struct {
+	UserID   int
+	Status   int
+	Priority int
+	Subtasks int
+}
+
+func (r *CircleRepository) LeaderboardEvents(c context.Context, circleID int, since *time.Time) ([]LeaderboardEvent, error) {
+	var events []LeaderboardEvent
+	query := `
+		SELECT
+			CASE WHEN ch.performed_by_user_id != 0 THEN ch.performed_by_user_id ELSE ch.completed_by END AS user_id,
+			ch.status AS status,
+			ch.priority_at_completion AS priority,
+			ch.subtasks_completed AS subtasks
+		FROM chore_histories ch
+		JOIN chores c ON c.id = ch.chore_id
+		WHERE c.circle_id = ? AND ch.status IN (1, 2)
+	`
+	args := []interface{}{circleID}
+	if since != nil {
+		query += ` AND ch.performed_at >= ?`
+		args = append(args, *since)
+	}
+	err := r.db.WithContext(c).Raw(query, args...).Scan(&events).Error
+	return events, err
 }
 
 func (r *CircleRepository) AssignDefaultCircle(c context.Context, userID int) error {

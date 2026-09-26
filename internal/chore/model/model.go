@@ -105,9 +105,20 @@ type ChoreHistory struct {
 	UpdatedAt   *time.Time         `json:"updatedAt" gorm:"column:updated_at"`                          // When the record was last updated
 	CreatedAt   time.Time          `json:"createdAt" gorm:"column:created_at;autoCreateTime;<-:create"` // When the record was created (immutable after insert)
 	Status      ChoreHistoryStatus `json:"status" gorm:"column:status"`                                 // Status of the chore (1=completed, 2=skipped)
-	Points      *int               `json:"points,omitempty" gorm:"column:points"`                       // Points for completing the chore
+	Points               *int               `json:"points,omitempty" gorm:"column:points"`                       // Points for completing the chore
+	ActorUserID          int                `json:"actorUserId" gorm:"column:actor_user_id;default:0"`           // API caller who recorded the action
+	PerformedByUserID    int                `json:"performedByUserId" gorm:"column:performed_by_user_id;default:0"`
+	PriorityAtCompletion int                `json:"priorityAtCompletion" gorm:"column:priority_at_completion;default:0"`
+	SubtasksCompleted    int                `json:"subtasksCompleted" gorm:"column:subtasks_completed;default:0"`
 	Duration    *int               `json:"duration,omitempty" gorm:"<-:false;-:migration"`              // Duration in seconds calculated from query (read-only, no DB column)
 	SyncVersion int64              `json:"syncVersion" gorm:"column:sync_version;not null;default:0;index:idx_chore_history_sync_version"`
+}
+
+// HistoryAttribution records who called the API and who the completion counts for.
+// A nil value means both are the user id passed to CompleteChore or SkipChore.
+type HistoryAttribution struct {
+	ActorUserID       int
+	PerformedByUserID int
 }
 
 type ChoreHistoryStatus int8

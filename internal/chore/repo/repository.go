@@ -564,7 +564,33 @@ func (r *ChoreRepository) RejectChore(c context.Context, choreID int, circleID i
 	})
 }
 
-func (r *ChoreRepository) CompleteChore(c context.Context, chore *chModel.Chore, note *string, userID int, dueDate *time.Time, completedDate *time.Time, nextAssignedTo *int, applyPoints bool) error {
+func applyHistoryCredit(ch *chModel.ChoreHistory, userID int, chore *chModel.Chore, credit *chModel.HistoryAttribution, subtasksCompleted int) {
+	actor := userID
+	performer := userID
+	if credit != nil {
+		if credit.ActorUserID != 0 {
+			actor = credit.ActorUserID
+		}
+		if credit.PerformedByUserID != 0 {
+			performer = credit.PerformedByUserID
+		}
+	}
+	ch.CompletedBy = performer
+	ch.ActorUserID = actor
+	ch.PerformedByUserID = performer
+	ch.PriorityAtCompletion = chore.Priority
+	ch.SubtasksCompleted = subtasksCompleted
+}
+
+func (r *ChoreRepository) countCompletedSubtasks(tx *gorm.DB, choreID int) int {
+	var n int64
+	if err := tx.Model(&stModel.SubTask{}).Where("chore_id = ? AND completed_at IS NOT NULL", choreID).Count(&n).Error; err != nil {
+		return 0
+	}
+	return int(n)
+}
+
+func (r *ChoreRepository) CompleteChore(c context.Context, chore *chModel.Chore, note *string, userID int, dueDate *time.Time, completedDate *time.Time, nextAssignedTo *int, applyPoints bool, credit *chModel.HistoryAttribution) error {
 	nextVersion, err := r.nextSyncVersion(c, chore.CircleID)
 	if err != nil {
 		return err
@@ -617,6 +643,8 @@ func (r *ChoreRepository) CompleteChore(c context.Context, chore *chModel.Chore,
 			return err
 		}
 
+		applyHistoryCredit(ch, userID, chore, credit, r.countCompletedSubtasks(tx, chore.ID))
+
 		// Update UserCirclee Points :
 		if applyPoints && chore.Points != nil && *chore.Points > 0 {
 			ch.Points = chore.Points
@@ -650,7 +678,7 @@ func (r *ChoreRepository) CompleteChore(c context.Context, chore *chModel.Chore,
 	return err
 }
 
-func (r *ChoreRepository) SkipChore(c context.Context, chore *chModel.Chore, userID int, dueDate *time.Time, nextAssignedTo *int, skippedAt *time.Time) error {
+func (r *ChoreRepository) SkipChore(c context.Context, chore *chModel.Chore, userID int, dueDate *time.Time, nextAssignedTo *int, skippedAt *time.Time, credit *chModel.HistoryAttribution) error {
 	nextVersion, err := r.nextSyncVersion(c, chore.CircleID)
 	if err != nil {
 		return err
@@ -701,6 +729,8 @@ func (r *ChoreRepository) SkipChore(c context.Context, chore *chModel.Chore, use
 		default:
 			return err
 		}
+
+		applyHistoryCredit(ch, userID, chore, credit, r.countCompletedSubtasks(tx, chore.ID))
 
 		ch.SyncVersion = nextVersion
 		// Perform the update operation once, using the prepared updates map.

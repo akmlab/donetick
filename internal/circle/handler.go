@@ -1,6 +1,7 @@
 package circle
 
 import (
+	"encoding/json"
 	"log"
 
 	"strconv"
@@ -796,6 +797,186 @@ func (h *Handler) ChangeMemberRole(c *gin.Context) {
 
 }
 
+type leaderboardRow struct {
+	UserID            int     `json:"userId"`
+	Username          string  `json:"username"`
+	DisplayName       string  `json:"displayName"`
+	IsServiceUser     bool    `json:"isServiceUser"`
+	Completions       int     `json:"completions"`
+	SubtasksCompleted int     `json:"subtasksCompleted"`
+	Skips             int     `json:"skips"`
+	Points            float64 `json:"points"`
+}
+
+func (h *Handler) GetLeaderboard(c *gin.Context) {
+	log := logging.FromContext(c)
+	currentUser, ok := auth.CurrentUser(c)
+	if !ok {
+		c.JSON(401, gin.H{"error": "Authentication failed"})
+		return
+	}
+
+	circleID, err := strconv.Atoi(c.Param("id"))
+	if err != nil {
+		c.JSON(400, gin.H{"error": "Invalid circle ID"})
+		return
+	}
+
+	daysRaw := c.Query("days")
+	days := 0
+	if daysRaw != "" {
+		days, err = strconv.Atoi(daysRaw)
+		if err != nil || days < 0 || days > 3650 {
+			c.JSON(400, gin.H{"error": "days must be between 0 and 3650"})
+			return
+		}
+	}
+
+	members, err := h.circleRepo.GetCircleUsers(c, circleID)
+	if err != nil {
+		log.Error("Error getting circle members:", err)
+		c.JSON(500, gin.H{"error": "Error getting circle members"})
+		return
+	}
+	isActiveMember := false
+	for _, member := range members {
+		if member.UserID == currentUser.ID && member.IsActive {
+			isActiveMember = true
+			break
+		}
+	}
+	if !isActiveMember {
+		c.JSON(403, gin.H{"error": "You are not a member of this circle"})
+		return
+	}
+
+	circle, err := h.circleRepo.GetCircleByID(c, circleID)
+	if err != nil {
+		log.Error("Error getting circle:", err)
+		c.JSON(500, gin.H{"error": "Error getting circle"})
+		return
+	}
+	rules, err := ParsePointRules(circle.PointRules)
+	if err != nil {
+		c.JSON(500, gin.H{"error": "Invalid point rules on circle"})
+		return
+	}
+
+	var since *time.Time
+	if days > 0 {
+		t := time.Now().UTC().AddDate(0, 0, -days)
+		since = &t
+	}
+
+	lbMembers, err := h.circleRepo.LeaderboardMembers(c, circleID)
+	if err != nil {
+		log.Error("Error getting leaderboard members:", err)
+		c.JSON(500, gin.H{"error": "Error getting leaderboard members"})
+		return
+	}
+	events, err := h.circleRepo.LeaderboardEvents(c, circleID, since)
+	if err != nil {
+		log.Error("Error getting leaderboard events:", err)
+		c.JSON(500, gin.H{"error": "Error getting leaderboard events"})
+		return
+	}
+
+	historyEvents := make([]HistoryEvent, 0, len(events))
+	completions := map[int]int{}
+	subtasks := map[int]int{}
+	skips := map[int]int{}
+	for _, event := range events {
+		historyEvents = append(historyEvents, HistoryEvent{
+			UserID:   event.UserID,
+			Status:   event.Status,
+			Priority: event.Priority,
+			Subtasks: event.Subtasks,
+		})
+		switch event.Status {
+		case 1:
+			completions[event.UserID]++
+			subtasks[event.UserID] += event.Subtasks
+		case 2:
+			skips[event.UserID]++
+		}
+	}
+	scores := ScoreHistory(rules, historyEvents)
+
+	rows := make([]leaderboardRow, 0, len(lbMembers))
+	for _, member := range lbMembers {
+		rows = append(rows, leaderboardRow{
+			UserID:            member.UserID,
+			Username:          member.Username,
+			DisplayName:       member.DisplayName,
+			IsServiceUser:     member.IsServiceUser,
+			Completions:       completions[member.UserID],
+			SubtasksCompleted: subtasks[member.UserID],
+			Skips:             skips[member.UserID],
+			Points:            scores[member.UserID],
+		})
+	}
+
+	c.JSON(200, gin.H{"res": rows})
+}
+
+func (h *Handler) UpdateCircleSettings(c *gin.Context) {
+	log := logging.FromContext(c)
+	currentUser, ok := auth.CurrentUser(c)
+	if !ok {
+		c.JSON(401, gin.H{"error": "Authentication failed"})
+		return
+	}
+
+	circleID, err := strconv.Atoi(c.Param("id"))
+	if err != nil {
+		c.JSON(400, gin.H{"error": "Invalid circle ID"})
+		return
+	}
+
+	admins, err := h.circleRepo.GetCircleAdmins(c, circleID)
+	if err != nil {
+		log.Error("Error getting circle admins:", err)
+		c.JSON(500, gin.H{"error": "Error getting circle admins"})
+		return
+	}
+	isAdmin := false
+	for _, admin := range admins {
+		if admin.UserID == currentUser.ID {
+			isAdmin = true
+			break
+		}
+	}
+	if !isAdmin {
+		c.JSON(403, gin.H{"error": "You are not an admin of this circle"})
+		return
+	}
+
+	var body struct {
+		PointRules json.RawMessage `json:"point_rules"`
+	}
+	if err := c.ShouldBindJSON(&body); err != nil || len(body.PointRules) == 0 {
+		c.JSON(400, gin.H{"error": "Invalid request body"})
+		return
+	}
+	rules, err := ParsePointRules(string(body.PointRules))
+	if err != nil {
+		c.JSON(400, gin.H{"error": "Invalid point_rules JSON"})
+		return
+	}
+	canonical, err := MarshalPointRules(rules)
+	if err != nil {
+		c.JSON(500, gin.H{"error": "Failed to encode point rules"})
+		return
+	}
+	if err := h.circleRepo.UpdatePointRules(c, circleID, canonical); err != nil {
+		log.Error("Error updating point rules:", err)
+		c.JSON(500, gin.H{"error": "Failed to update point rules"})
+		return
+	}
+
+	c.JSON(200, gin.H{"res": rules})
+}
+
 func Routes(router *gin.Engine, h *Handler, multiAuthMiddleware *auth.MultiAuthMiddleware) {
 	log.Println("Registering circle routes")
 
@@ -807,6 +988,8 @@ func Routes(router *gin.Engine, h *Handler, multiAuthMiddleware *auth.MultiAuthM
 		circleRoutes.PUT("/members/role", h.ChangeMemberRole)
 		circleRoutes.GET("/", h.GetUserCircles)
 		circleRoutes.POST("/:id/members/points/redeem", h.RedeemPoints)
+		circleRoutes.GET("/:id/leaderboard", h.GetLeaderboard)
+		circleRoutes.PATCH("/:id/settings", h.UpdateCircleSettings)
 
 		if !h.singleCircleInstance {
 			circleRoutes.PUT("/members/requests/accept", h.AcceptJoinRequest)

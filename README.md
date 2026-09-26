@@ -1,7 +1,39 @@
 
 # <img src="assets/icon.png" alt="drawing" width="45"/>Donetick 
 
+## akmlab fork
 
+This repository ([akmlab/donetick](https://github.com/akmlab/donetick)) is a modified [Donetick](https://github.com/donetick/donetick) fork under AGPL-3.0. Branch `assistant` was cut from tag `v0.1.79`. It adds:
+
+- A **service user** (API-only circle member) created by a circle admin via `POST /api/v1/users/service` with body `{"username":"assistant"}` (auth: `secretkey` header or JWT). Response `res.token` is the access token to use as the Open WebUI `DONETICK_API_KEY`.
+- Service users are circle members and are **skipped by assignee rotation** unless they are on an explicit assignee list.
+- Completion **attribution**: `POST /api/v1/chores/:id/do` and `/skip` accept optional `as_user_id` (must be an active same-circle member, else 400). When omitted, behavior matches upstream (actor and performer are the same user). When set, the token user is the actor and `as_user_id` is the performer.
+- A **points leaderboard**: `GET /api/v1/circles/:id/leaderboard?days=` (`days` omitted or `0` = all time, max `3650`) and `PATCH /api/v1/circles/:id/settings` with `{"point_rules":...}` (admin only).
+
+Default point rules JSON:
+
+```json
+{
+  "completion": 1,
+  "subtask": 1,
+  "skip": -1,
+  "priority_multipliers": {"0": 1, "1": 1, "2": 1.5, "3": 2, "4": 3}
+}
+```
+
+Sync later with upstream:
+
+```bash
+git fetch upstream && git merge upstream/develop
+```
+
+Build the assistant image (on the server):
+
+```bash
+docker build -f Dockerfile.assistant -t donetick:assistant .
+```
+
+---
 
 **Simplify Tasks & Chores, Together!**
 

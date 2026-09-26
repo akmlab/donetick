@@ -339,6 +339,21 @@ type ActionOptions struct {
 
 type ActionReq struct {
 	ActionOptions *ActionOptions `json:"actionOptions"`
+	AsUserID      *int           `json:"as_user_id"`
+}
+
+var errNotCircleMember = errors.New("as_user_id is not a member of this circle")
+
+func performerForAction(actorID int, asUserID *int, circleUsers []*circle.UserCircleDetail) (int, error) {
+	if asUserID == nil || *asUserID == 0 || *asUserID == actorID {
+		return actorID, nil
+	}
+	for _, member := range circleUsers {
+		if member.UserID == *asUserID && member.IsActive {
+			return *asUserID, nil
+		}
+	}
+	return 0, errNotCircleMember
 }
 
 func bindOptionalActionReq(c *gin.Context, req interface{}) error {
@@ -912,7 +927,6 @@ func (h *Handler) EditChore(c *gin.Context) {
 			return
 		}
 	}
-
 
 	if dueDatesDiffer(oldChore.NextDueDate, updatedChore.NextDueDate) {
 		historyEntry := &chModel.ChoreHistory{
@@ -1821,7 +1835,33 @@ func (h *Handler) SkipChore(c *gin.Context) {
 		t := req.ActionOptions.CreatedAt.UTC()
 		skippedAt = &t
 	}
-	if err := h.choreRepo.SkipChore(c, chore, effectiveUser.ID, nextDueDate, nextAssignedTo, skippedAt); err != nil {
+
+	performerID := effectiveUser.ID
+	actorID := actualUser.ID
+	if req.AsUserID != nil && *req.AsUserID != 0 {
+		circleUsers, err := h.circleRepo.GetCircleUsers(c, actualUser.CircleID)
+		if err != nil {
+			logger.Error("Failed to retrieve circle users", "error", err)
+			c.JSON(500, gin.H{
+				"error": "Failed to retrieve circle users",
+			})
+			return
+		}
+		performerID, err = performerForAction(actualUser.ID, req.AsUserID, circleUsers)
+		if err != nil {
+			c.JSON(400, gin.H{
+				"error": "as_user_id is not a member of this circle",
+			})
+			return
+		}
+	} else {
+		actorID = effectiveUser.ID
+	}
+	credit := &chModel.HistoryAttribution{
+		ActorUserID:       actorID,
+		PerformedByUserID: performerID,
+	}
+	if err := h.choreRepo.SkipChore(c, chore, performerID, nextDueDate, nextAssignedTo, skippedAt, credit); err != nil {
 		c.JSON(500, gin.H{
 			"error": "Error completing chore",
 		})
@@ -2115,6 +2155,7 @@ type CompleteChoreReq struct { // TODO: Remove "Note" in future.
 	CompletedBy   *int           `json:"completedBy"`                    // The completed by only can be populated by the admin or super user.
 	CompletedDate *time.Time     `json:"completedTime"`                  // Completion date in RFC3339 format (defaults to now).
 	ActionOptions *ActionOptions `json:"actionOptions"`
+	AsUserID      *int           `json:"as_user_id"`
 }
 
 // endregion
@@ -2208,11 +2249,25 @@ func (h *Handler) CompleteChore(c *gin.Context) {
 		})
 		return
 	}
-	if !chore.CanComplete(effectiveUser.ID, circleUsers) {
-		c.JSON(400, gin.H{
-			"error": "User is not assigned to chore",
-		})
-		return
+
+	actorID := actualUser.ID
+	asUserSet := req.AsUserID != nil && *req.AsUserID != 0
+	if asUserSet {
+		performer, err := performerForAction(actualUser.ID, req.AsUserID, circleUsers)
+		if err != nil {
+			c.JSON(400, gin.H{
+				"error": "as_user_id is not a member of this circle",
+			})
+			return
+		}
+		completedBy = performer
+	} else {
+		if !chore.CanComplete(effectiveUser.ID, circleUsers) {
+			c.JSON(400, gin.H{
+				"error": "User is not assigned to chore",
+			})
+			return
+		}
 	}
 
 	// confirm that the chore in completion window:
@@ -2225,7 +2280,7 @@ func (h *Handler) CompleteChore(c *gin.Context) {
 		}
 	}
 
-	if req.CompletedBy != nil {
+	if !asUserSet && req.CompletedBy != nil {
 		// Only allow admins to complete chores on behalf of others in the circle
 		// Use actualUser for authorization since this is an admin function
 		ok := authorizeChoreCompletionForUser(h, c, actualUser, req.CompletedBy)
@@ -2233,6 +2288,9 @@ func (h *Handler) CompleteChore(c *gin.Context) {
 			return
 		}
 		completedBy = *req.CompletedBy
+	}
+	if !asUserSet {
+		actorID = completedBy
 	}
 	var nextDueDate *time.Time
 	if chore.FrequencyType == "adaptive" {
@@ -2325,7 +2383,10 @@ func (h *Handler) CompleteChore(c *gin.Context) {
 		return
 	}
 
-	if err := h.choreRepo.CompleteChore(c, chore, note, completedBy, nextDueDate, &completedDate, nextAssignedTo, true); err != nil {
+	if err := h.choreRepo.CompleteChore(c, chore, note, completedBy, nextDueDate, &completedDate, nextAssignedTo, true, &chModel.HistoryAttribution{
+		ActorUserID:       actorID,
+		PerformedByUserID: completedBy,
+	}); err != nil {
 		c.JSON(500, gin.H{
 			"error": "Error completing chore",
 		})
@@ -3919,6 +3980,29 @@ func (h *Handler) updateTimer(c *gin.Context) { // TODO: Not used in Routes
 	})
 }
 
+// rotationAssignees is the pool checkNextAssignee chooses from.
+// An empty assignee list means the whole circle, except service users.
+// A service user is included only when they are already on the explicit list.
+func rotationAssignees(chore *chModel.Chore, circleUsers []*circle.UserCircleDetail) []chModel.ChoreAssignees {
+	if len(chore.Assignees) > 0 {
+		return chore.Assignees
+	}
+	if chore.AssignStrategy == chModel.AssignmentStrategyNoAssignee {
+		return nil
+	}
+	assignees := make([]chModel.ChoreAssignees, 0, len(circleUsers))
+	for _, circleUser := range circleUsers {
+		if circleUser.IsServiceUser {
+			continue
+		}
+		assignees = append(assignees, chModel.ChoreAssignees{
+			ChoreID: chore.ID,
+			UserID:  circleUser.UserID,
+		})
+	}
+	return assignees
+}
+
 func checkNextAssignee(chore *chModel.Chore, choresHistory []*chModel.ChoreHistory, performerID int, circleUsers []*circle.UserCircleDetail) (*int, error) {
 	// copy the history to avoid modifying the original:
 	history := make([]*chModel.ChoreHistory, len(choresHistory))
@@ -3930,15 +4014,7 @@ func checkNextAssignee(chore *chModel.Chore, choresHistory []*chModel.ChoreHisto
 	// so dropping it would silence the chore. no_assignee is excluded because nil is its
 	// intended result. Mirrors the create/edit validation, which treats an empty assignee
 	// list as the whole circle.
-	assignees := chore.Assignees
-	if len(assignees) == 0 && chore.AssignStrategy != chModel.AssignmentStrategyNoAssignee {
-		for _, circleUser := range circleUsers {
-			assignees = append(assignees, chModel.ChoreAssignees{
-				ChoreID: chore.ID,
-				UserID:  circleUser.UserID,
-			})
-		}
-	}
+	assignees := rotationAssignees(chore, circleUsers)
 
 	assigneesMap := map[int]bool{}
 	for _, assignee := range assignees {
