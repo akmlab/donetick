@@ -18,6 +18,9 @@ RUN git clone --branch develop https://github.com/donetick/frontend.git . \
 # Weekday chores with empty frequency metadata crash the chores page
 # (Cannot read properties of null (reading 'days')).
 COPY frontend-patches/ChoreCardHelpers.jsx /src/src/utils/ChoreCardHelpers.jsx
+# Hide the username/password form when /api/v1/resource reports
+# disable_password_auth. The v0.1.79 UI never reads that flag.
+COPY frontend-patches/LoginView.jsx /src/src/views/Authorization/LoginView.jsx
 RUN npm run build-selfhosted
 
 FROM --platform=$BUILDPLATFORM golang:1.24-alpine AS builder
