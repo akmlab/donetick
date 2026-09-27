@@ -15,6 +15,9 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/*
 RUN git clone --branch develop https://github.com/donetick/frontend.git . \
     && git checkout ${FRONTEND_REF}
+# Weekday chores with empty frequency metadata crash the chores page
+# (Cannot read properties of null (reading 'days')).
+COPY frontend-patches/ChoreCardHelpers.jsx /src/src/utils/ChoreCardHelpers.jsx
 RUN npm run build-selfhosted
 
 FROM --platform=$BUILDPLATFORM golang:1.24-alpine AS builder

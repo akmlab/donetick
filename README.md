@@ -27,7 +27,7 @@ Sync later with upstream:
 git fetch upstream && git merge upstream/develop
 ```
 
-The web UI is embedded in the Go binary. `Dockerfile.assistant` builds [donetick/frontend](https://github.com/donetick/frontend) at the commit that shipped with v0.1.79 and compiles that into the binary. The placeholder `frontend/dist/index.html` in this repo is not the running UI.
+The web UI is embedded in the Go binary. `Dockerfile.assistant` builds [donetick/frontend](https://github.com/donetick/frontend) at the commit that shipped with v0.1.79, applies `frontend-patches/ChoreCardHelpers.jsx` so a weekday chore with empty repeat days does not crash `/chores`, and compiles that into the binary. The placeholder `frontend/dist/index.html` in this repo is not the running UI.
 
 Build the assistant image (on the server):
 
