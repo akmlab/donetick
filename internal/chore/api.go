@@ -2,6 +2,7 @@ package chore
 
 import (
 	"strconv"
+	"strings"
 	"time"
 
 	"donetick.com/core/config"
@@ -20,6 +21,7 @@ import (
 
 	chModel "donetick.com/core/internal/chore/model"
 	cRepo "donetick.com/core/internal/circle/repo"
+	pjRepo "donetick.com/core/internal/project/repo"
 	stRepo "donetick.com/core/internal/subtask/repo"
 	uRepo "donetick.com/core/internal/user/repo"
 )
@@ -32,9 +34,10 @@ type API struct {
 	nRepo         *nRepo.NotificationRepository
 	eventProducer *events.EventsProducer
 	stRepo        *stRepo.SubTasksRepository
+	pjRepo        *pjRepo.ProjectRepository
 }
 
-func NewAPI(cr *chRepo.ChoreRepository, userRepo *uRepo.UserRepository, circleRepo *cRepo.CircleRepository, nPlanner *nps.NotificationPlanner, nr *nRepo.NotificationRepository, eventProducer *events.EventsProducer, stRepo *stRepo.SubTasksRepository) *API {
+func NewAPI(cr *chRepo.ChoreRepository, userRepo *uRepo.UserRepository, circleRepo *cRepo.CircleRepository, nPlanner *nps.NotificationPlanner, nr *nRepo.NotificationRepository, eventProducer *events.EventsProducer, stRepo *stRepo.SubTasksRepository, pjRepo *pjRepo.ProjectRepository) *API {
 	return &API{
 		choreRepo:     cr,
 		userRepo:      userRepo,
@@ -43,6 +46,7 @@ func NewAPI(cr *chRepo.ChoreRepository, userRepo *uRepo.UserRepository, circleRe
 		nRepo:         nr,
 		eventProducer: eventProducer,
 		stRepo:        stRepo,
+		pjRepo:        pjRepo,
 	}
 }
 
@@ -75,7 +79,7 @@ func (h *API) CreateChore(c *gin.Context) {
 	}
 
 	// Validate required fields
-	if choreRequest.Name == "" {
+	if strings.TrimSpace(choreRequest.Name) == "" {
 		c.JSON(400, gin.H{"error": "Chore name is required"})
 		return
 	}
@@ -126,6 +130,14 @@ func (h *API) CreateChore(c *gin.Context) {
 		}
 	}
 
+	if choreRequest.ProjectID != nil {
+		// check if the specified project exists
+		if proj, _ := h.pjRepo.GetProjectByID(c, *choreRequest.ProjectID, user.CircleID); proj == nil {
+			c.JSON(400, gin.H{"error": "Specified project not found"})
+			return
+		}
+	}
+
 	chore := &chModel.Chore{
 		CreatedBy:     createdBy,
 		CircleID:      user.CircleID,
@@ -139,6 +151,7 @@ func (h *API) CreateChore(c *gin.Context) {
 		Description:    choreRequest.Description,
 		NextDueDate:    nextDueDate,
 		CreatedAt:      time.Now().UTC(),
+		ProjectID:      choreRequest.ProjectID,
 	}
 
 	id, err := h.choreRepo.CreateChore(c, chore)
@@ -202,10 +215,12 @@ func (h *API) UpdateChore(c *gin.Context) {
 		return
 	}
 
-	// Validate required fields
-	if choreRequest.Name == "" {
-		c.JSON(400, gin.H{"error": "Chore name is required"})
-		return
+	if strings.TrimSpace(choreRequest.Name) == "" {
+		choreRequest.Name = existingChore.Name
+	}
+
+	if choreRequest.Description == nil {
+		choreRequest.Description = existingChore.Description
 	}
 
 	// Parse due date if provided
@@ -229,6 +244,8 @@ func (h *API) UpdateChore(c *gin.Context) {
 			return
 		}
 		nextDueDate = &parsedDate
+	} else {
+		nextDueDate = existingChore.NextDueDate
 	}
 
 	// Update only name and due date
@@ -238,6 +255,9 @@ func (h *API) UpdateChore(c *gin.Context) {
 		"next_due_date": nextDueDate,
 		"updated_by":    user.ID,
 		"updated_at":    time.Now().UTC(),
+	}
+	if choreRequest.ForceUnarchive {
+		updates["is_active"] = true
 	}
 
 	err = h.choreRepo.UpdateChoreFields(c, choreID, updates)

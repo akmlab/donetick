@@ -33,8 +33,8 @@ func (h *Handler) getLabels(c *gin.Context) {
 	// get current user:
 	currentUser, ok := auth.CurrentUser(c)
 	if !ok {
-		c.JSON(500, gin.H{
-			"error": "Error getting current user",
+		c.JSON(401, gin.H{
+			"error": "User not authenticated",
 		})
 		return
 	}
@@ -55,8 +55,8 @@ func (h *Handler) createLabel(c *gin.Context) {
 	// get current user:
 	currentUser, ok := auth.CurrentUser(c)
 	if !ok {
-		c.JSON(500, gin.H{
-			"error": "Error getting current user",
+		c.JSON(401, gin.H{
+			"error": "User not authenticated",
 		})
 		return
 	}
@@ -90,8 +90,8 @@ func (h *Handler) createLabel(c *gin.Context) {
 func (h *Handler) updateLabel(c *gin.Context) {
 	currentUser, ok := auth.CurrentUser(c)
 	if !ok {
-		c.JSON(500, gin.H{
-			"error": "Error getting current user",
+		c.JSON(401, gin.H{
+			"error": "User not authenticated",
 		})
 		return
 	}
@@ -127,8 +127,8 @@ func (h *Handler) deleteLabel(c *gin.Context) {
 	// read label id from path:
 
 	if !ok {
-		c.JSON(500, gin.H{
-			"error": "Error getting current user",
+		c.JSON(401, gin.H{
+			"error": "User not authenticated",
 		})
 		return
 	}

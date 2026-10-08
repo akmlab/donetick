@@ -91,8 +91,8 @@ func (h *Handler) GetAllUsers() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		currentUser, ok := auth.CurrentUser(c)
 		if !ok {
-			c.JSON(500, gin.H{
-				"error": "Error getting current user",
+			c.JSON(http.StatusUnauthorized, gin.H{
+				"error": "User not authenticated",
 			})
 			return
 		}
@@ -172,14 +172,30 @@ func (h *Handler) signUp(c *gin.Context) {
 		})
 		return
 	}
-	// var userCircle *circle.Circle
-	// var userRole string
-	userCircle, err := h.circleRepo.CreateCircle(c, &cModel.Circle{
-		Name:       signupReq.DisplayName + "'s circle",
-		CreatedAt:  time.Now().UTC(),
-		UpdatedAt:  time.Now().UTC(),
-		InviteCode: utils.GenerateInviteCode(c),
-	})
+	var userCircle *cModel.Circle
+	role := cModel.UserRoleAdmin
+	if h.singleCircleInstance {
+		// In single-circle mode, every signup joins the shared household circle
+		// (ID 1) instead of getting its own. The first signup bootstraps it.
+		userCircle, err = h.circleRepo.GetCircleByID(c, 1)
+		if err != nil {
+			userCircle, err = h.circleRepo.CreateCircle(c, &cModel.Circle{
+				Name:       "Home",
+				CreatedAt:  time.Now().UTC(),
+				UpdatedAt:  time.Now().UTC(),
+				InviteCode: utils.GenerateInviteCode(c),
+			})
+		} else {
+			role = cModel.UserRoleMember
+		}
+	} else {
+		userCircle, err = h.circleRepo.CreateCircle(c, &cModel.Circle{
+			Name:       signupReq.DisplayName + "'s circle",
+			CreatedAt:  time.Now().UTC(),
+			UpdatedAt:  time.Now().UTC(),
+			InviteCode: utils.GenerateInviteCode(c),
+		})
+	}
 
 	if err != nil {
 		c.JSON(500, gin.H{
@@ -191,7 +207,7 @@ func (h *Handler) signUp(c *gin.Context) {
 	if err := h.circleRepo.AddUserToCircle(c, &cModel.UserCircle{
 		UserID:    insertedUser.ID,
 		CircleID:  userCircle.ID,
-		Role:      "admin",
+		Role:      role,
 		IsActive:  true,
 		CreatedAt: time.Now().UTC(),
 		UpdatedAt: time.Now().UTC(),
@@ -221,8 +237,8 @@ func (h *Handler) signUp(c *gin.Context) {
 func (h *Handler) GetUserProfile(c *gin.Context) {
 	user, ok := auth.CurrentUser(c)
 	if !ok {
-		c.JSON(500, gin.H{
-			"error": "Error getting user",
+		c.JSON(http.StatusUnauthorized, gin.H{
+			"error": "User not authenticated",
 		})
 		return
 	}
@@ -617,6 +633,7 @@ func (h *Handler) thirdPartyAuthCallback(c *gin.Context) {
 		type Request struct {
 			Code        string `json:"code"`
 			RedirectURI string `json:"redirect_uri"`
+			Verifier    string `json:"verifier"`
 		}
 		var req Request
 		if err := c.ShouldBindJSON(&req); err != nil {
@@ -635,7 +652,7 @@ func (h *Handler) thirdPartyAuthCallback(c *gin.Context) {
 		logger.Infow("account.handler.thirdPartyAuthCallback (oauth2) attempting to exchange code", "codeLength", len(req.Code), "redirectURI", req.RedirectURI)
 
 		// Pass the redirect URI from the request if provided, otherwise use config default
-		token, err := h.identityProvider.ExchangeToken(c, req.Code, req.RedirectURI)
+		token, err := h.identityProvider.ExchangeToken(c, req.Code, req.RedirectURI, req.Verifier)
 
 		if err != nil {
 			logger.Errorw("account.handler.thirdPartyAuthCallback (oauth2) failed to exchange token", "err", err, "code", req.Code[:min(len(req.Code), 10)]+"...")
@@ -940,8 +957,8 @@ func (h *Handler) UpdateUserDetails(c *gin.Context) {
 	}
 	user, ok := auth.CurrentUser(c)
 	if !ok {
-		c.JSON(500, gin.H{
-			"error": "Error getting user",
+		c.JSON(http.StatusUnauthorized, gin.H{
+			"error": "User not authenticated",
 		})
 		return
 	}
@@ -984,7 +1001,7 @@ func (h *Handler) UpdateUserDetails(c *gin.Context) {
 func (h *Handler) CreateLongLivedToken(c *gin.Context) {
 	currentUser, ok := auth.CurrentUser(c)
 	if !ok {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to get current user"})
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "User not authenticated"})
 		return
 	}
 
@@ -1057,7 +1074,7 @@ func (h *Handler) CreateLongLivedToken(c *gin.Context) {
 func (h *Handler) GetAllUserToken(c *gin.Context) {
 	currentUser, ok := auth.CurrentUser(c)
 	if !ok {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to get current user"})
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "User not authenticated"})
 		return
 	}
 
@@ -1074,7 +1091,7 @@ func (h *Handler) GetAllUserToken(c *gin.Context) {
 func (h *Handler) DeleteUserToken(c *gin.Context) {
 	currentUser, ok := auth.CurrentUser(c)
 	if !ok {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to get current user"})
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "User not authenticated"})
 		return
 	}
 
@@ -1092,7 +1109,7 @@ func (h *Handler) DeleteUserToken(c *gin.Context) {
 func (h *Handler) UpdateNotificationTarget(c *gin.Context) {
 	currentUser, ok := auth.CurrentUser(c)
 	if !ok {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to get current user"})
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "User not authenticated"})
 		return
 	}
 
@@ -1152,7 +1169,7 @@ func (h *Handler) updateUserPasswordLoggedInOnly(c *gin.Context) {
 
 	currentUser, ok := auth.CurrentUser(c)
 	if !ok {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to get current user"})
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "User not authenticated"})
 		return
 	}
 
@@ -1178,7 +1195,7 @@ func (h *Handler) updateUserPasswordLoggedInOnly(c *gin.Context) {
 func (h *Handler) setWebhook(c *gin.Context) {
 	currentUser, ok := auth.CurrentUser(c)
 	if !ok {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to get current user"})
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "User not authenticated"})
 		return
 	}
 
@@ -1228,7 +1245,7 @@ func (h *Handler) setWebhook(c *gin.Context) {
 func (h *Handler) updateProfilePhoto(c *gin.Context) {
 	currentUser, ok := auth.CurrentUser(c)
 	if !ok {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to get current user"})
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "User not authenticated"})
 		return
 	}
 
@@ -1305,7 +1322,7 @@ func (h *Handler) updateProfilePhoto(c *gin.Context) {
 func (h *Handler) getStorageUsage(c *gin.Context) {
 	currentUser, ok := auth.CurrentUser(c)
 	if !ok {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to get current user"})
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "User not authenticated"})
 		return
 	}
 
@@ -1861,10 +1878,10 @@ func (h *Handler) createServiceUser(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"res": tokenModel})
 }
 
-func Routes(router *gin.Engine, h *Handler, jwtAuth *jwt.GinJWTMiddleware, limiter *limiter.Limiter, cfg *config.Config) {
+func Routes(router *gin.Engine, h *Handler, jwtAuth *jwt.GinJWTMiddleware, multiAuthMiddleware *auth.MultiAuthMiddleware, limiter *limiter.Limiter, cfg *config.Config) {
 
 	userRoutes := router.Group("api/v1/users")
-	userRoutes.Use(jwtAuth.MiddlewareFunc(), utils.RateLimitMiddleware(limiter))
+	userRoutes.Use(multiAuthMiddleware.MiddlewareFunc(), utils.RateLimitMiddleware(limiter))
 	{
 		userRoutes.GET("/", h.GetAllUsers())
 		userRoutes.GET("/profile", h.GetUserProfile)

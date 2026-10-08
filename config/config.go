@@ -194,7 +194,9 @@ type EmailConfig struct {
 	Key       string `mapstructure:"key"`
 	Host      string `mapstructure:"host"`
 	Port      int    `mapstructure:"port"`
-	AppHost   string `mapstructure:"appHost"`
+	// Renamed from "appHost" to match this struct's snake_case convention;
+	// see the legacy fallback in LoadConfig.
+	AppHost   string `mapstructure:"app_host" yaml:"app_host"`
 	LogRawURL bool   `mapstructure:"log_raw_url" yaml:"log_raw_url"`
 	// Provider selects which email sender implementation to use.
 	// "smtp" (default, empty also means smtp) uses host/port/user/key as SMTP creds.
@@ -209,6 +211,7 @@ type OAuth2Config struct {
 	ClientID      string   `mapstructure:"client_id" yaml:"client_id"`
 	ClientSecret  string   `mapstructure:"client_secret" yaml:"client_secret"`
 	RedirectURL   string   `mapstructure:"redirect_url" yaml:"redirect_url"`
+	PKCE          bool     `mapstructure:"pkce" yaml:"pkce"`
 	Scopes        []string `mapstructure:"scopes" yaml:"scopes"`
 	AuthURL       string   `mapstructure:"auth_url" yaml:"auth_url"`
 	TokenURL      string   `mapstructure:"token_url" yaml:"token_url"`
@@ -371,6 +374,13 @@ func LoadConfig() *Config {
 	err = viper.Unmarshal(&config)
 	if err != nil {
 		panic(err)
+	}
+
+	// Legacy fallback for YAML configs still using the old "appHost" key.
+	if config.EmailConfig.AppHost == "" {
+		if legacy := viper.GetString("email.appHost"); legacy != "" {
+			config.EmailConfig.AppHost = legacy
+		}
 	}
 
 	// Apply default values for fields with default tags

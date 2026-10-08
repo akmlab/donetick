@@ -31,6 +31,7 @@ const (
 	FrequencyTypeDayOfTheMonth FrequencyType = "day_of_the_month"
 	FrequencyTypeTrigger       FrequencyType = "trigger"
 	FrequencyTypeNoRepeat      FrequencyType = "no_repeat"
+	FrequencyTypeAlways        FrequencyType = "always"
 )
 
 type AssignmentStrategy string
@@ -212,11 +213,13 @@ type ChoreLabels struct {
 	Label   lModel.Label
 }
 type ChoreLiteReq struct { // TODO: Remove this when api is removed.
-	Name        string  `json:"name" binding:"required"`
-	Description *string `json:"description,omitempty"`
-	ID          int     `json:"id"`
-	DueDate     string  `json:"dueDate"`
-	CreatedBy   *int    `json:"createdBy,omitempty"`
+	Name           string  `json:"name" binding:"omitempty"`
+	Description    *string `json:"description,omitempty"`
+	ID             int     `json:"id"`
+	DueDate        string  `json:"dueDate"`
+	ForceUnarchive bool    `json:"forceUnarchive,omitempty"`
+	CreatedBy      *int    `json:"createdBy,omitempty"`
+	ProjectID      *int    `json:"projectId,omitempty"` // The project this chore belongs to
 }
 
 func (c *Chore) CanDeleteHistory(
